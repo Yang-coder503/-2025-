@@ -1,0 +1,222 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+
+"""一、数据输入"""
+file_path1 = r"C:\Users\Yang\Desktop\kaggle-1 TITANIC\train.csv"
+file_path2 = r"C:\Users\Yang\Desktop\kaggle-1 TITANIC\test.csv"
+
+df = pd.read_csv(file_path1)
+test_df = pd.read_csv(file_path2)
+
+columns = ["PassengerId", "Survived","Pclass", "Name", "Sex", "Age", "SibSp", "Parch", "Ticket", "Fare", "Cabin", "Embarked"]
+
+info_vectors = []
+
+for index, row in df.iterrows() :
+    row_vector = []
+    for col in columns :
+        row_vector.append(row[col])
+    info_vectors.append(row_vector)
+
+"""
+测试代码
+print("读取的行数:", len(info_vectors))
+print("第一行数据:", info_vectors[0] if info_vectors else "无数据")
+print("第二行数据:", info_vectors[1] if len(info_vectors) > 1 else "无数据")
+"""
+
+"""二、探索性数据分析"""
+# 设置风格，避免中文乱码建议使用默认或指定字体
+sns.set_theme(style="whitegrid")
+
+
+# 创建 1行2列 的画布
+fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+
+# --- 左图：生存情况统计 (Categorical) ---
+# 使用频次图统计 0 和 1 的个数
+sns.countplot(x='Survived', data=df, ax=axes[0], palette='viridis')
+axes[0].set_title('Survival Count (0 = Deceased, 1 = Survived)', fontsize=15)
+axes[0].set_xticklabels(['Deceased', 'Survived']) # 显式设置标签防止重叠
+
+# --- 右图：年龄分布情况 (Numerical) ---
+# 使用直方图画出年龄的直方图和密度曲线
+sns.histplot(df['Age'].dropna(), kde=True, ax=axes[1], color='skyblue', bins=30)
+axes[1].set_title('Passenger Age Distribution', fontsize=15)
+
+# 在右图添加平均年龄线
+mean_age = df['Age'].mean()
+axes[1].axvline(mean_age, color='red', linestyle='--', label=f'Mean Age: {mean_age:.1f}')
+axes[1].legend()
+
+sns.set_theme(style="whitegrid")
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# --- 图1：年龄与生还的箱线图 ---
+sns.boxplot(ax=axes[0, 0], x='Survived', y='Age', data=df, palette='Set2')
+axes[0, 0].set_title('Age Distribution by Survival', fontsize=14)
+
+# --- 图2：性别与生还率 (条形图) ---
+# barplot 默认会计算平均值（即生还率）
+sns.barplot(ax=axes[0, 1], x='Sex', y='Survived', data=df, palette='viridis')
+axes[0, 1].set_title('Survival Rate by Sex', fontsize=14)
+
+# --- 图3：客舱等级与生还率 ---
+sns.barplot(ax=axes[1, 0], x='Pclass', y='Survived', data=df, palette='magma')
+axes[1, 0].set_title('Survival Rate by Pclass', fontsize=14)
+
+# --- 图4：缺失值热图 ---
+# isnull() 会返回布尔值，用热图可视化 True 的位置
+sns.heatmap(df.isnull(), yticklabels=False, cbar=False, cmap='viridis', ax=axes[1, 1])
+axes[1, 1].set_title('Missing Data Map (Yellow lines indicate missing values)', fontsize=14)
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# 优化1：客舱等级 + 性别的交叉分析
+# 观察不同舱位下的性别生还差异
+sns.barplot(ax=axes[0], x='Pclass', y='Survived', hue='Sex', data=df)
+axes[0].set_title('Survival Rate by Pclass and Sex')
+
+# 优化2：年龄分布的“小提琴图” (Violin Plot)
+# 比箱线图更能细致观察生还者与死者的年龄密度
+sns.violinplot(ax=axes[1], x='Sex', y='Age', hue='Survived', data=df, split=True)
+axes[1].set_title('Age Distribution by Sex and Survival')
+
+df['FamilySize'] = df['SibSp'] + df['Parch'] + 1
+# 可视化家庭人数与生还率的关系
+plt.figure(figsize=(10, 6))
+sns.barplot(x='FamilySize', y='Survived', data=df, palette='magma')
+plt.title('Impact of Family Size on Survival Rate')
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# 1. 不同港口的仓位分布 (查看人群结构)
+sns.countplot(ax=axes[0], x='Embarked', hue='Pclass', data=df)
+axes[0].set_title('Passenger Class Distribution by Port')
+
+# 2. 不同港口的平均票价 (查看财富水平)
+sns.boxplot(ax=axes[1], x='Embarked', y='Fare', data=df)
+axes[1].set_ylim(0, 200) # 限制Y轴以排除极端高价干扰观察
+axes[1].set_title('Fare Distribution by Port')
+
+# 自动调整间距，防止坐标轴重叠
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+"""三、缺失值填补"""
+# 1. 定义头衔提取函数
+def get_title(name):
+    title_search = re.search(r' ([A-Za-z]+)\.', name)
+    return title_search.group(1) if title_search else ""
+
+# 2. 预处理函数（合并重复动作，减少出错）
+def process_titles(dataset):
+    dataset['Title'] = dataset['Name'].apply(get_title)
+    rare_titles = ['Lady', 'Countess','Capt', 'Col','Don', 'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer', 'Dona']
+    dataset['Title'] = dataset['Title'].replace(rare_titles, 'Rare')
+    dataset['Title'] = dataset['Title'].replace(['Mlle', 'Ms'], 'Miss')
+    dataset['Title'] = dataset['Title'].replace('Mme', 'Mrs')
+    return dataset
+
+df = process_titles(df)
+test_df = process_titles(test_df)
+
+# 3. 建立年龄中位数参照表
+grouped_median_ages = df.groupby(['Pclass', 'Sex', 'Title'])['Age'].median()
+
+# 4. 定义年龄填充函数
+def fill_age_logic(row, median_source):
+    if pd.isnull(row['Age']):
+        try:
+            return grouped_median_ages[row['Pclass'], row['Sex'], row['Title']]
+        except KeyError:
+            return median_source
+    return row['Age']
+
+# 执行填充
+df['Age'] = df.apply(lambda r: fill_age_logic(r, df['Age'].median()), axis=1)
+test_df['Age'] = test_df.apply(lambda r: fill_age_logic(r, df['Age'].median()), axis=1) # 测试集也用训练集的中位数
+
+# 5. 其他缺失值补全
+df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])
+test_df['Fare'] = test_df['Fare'].fillna(df['Fare'].median()) # 测试集Fare用训练集填充更严谨
+
+# 6. 特征构造与映射 (确保只运行一次)
+df['Has_Cabin'] = df['Cabin'].apply(lambda x: 0 if pd.isnull(x) else 1)
+test_df['Has_Cabin'] = test_df['Cabin'].apply(lambda x: 0 if pd.isnull(x) else 1)
+
+df['Sex'] = df['Sex'].map({'female': 1, 'male': 0})
+test_df['Sex'] = test_df['Sex'].map({'female': 1, 'male': 0})
+
+# 7. 独热编码
+df = pd.get_dummies(df, columns=['Embarked', 'Title'], drop_first=True)
+test_df = pd.get_dummies(test_df, columns=['Embarked', 'Title'], drop_first=True)
+
+# 8. 整理最终矩阵
+cols_to_drop = ['PassengerId', 'Cabin', 'Name', 'Ticket']
+
+# 准备训练集
+df_final = df.drop(columns=cols_to_drop)
+X = df_final.drop('Survived', axis=1)
+y = df_final['Survived']
+
+# 准备测试集
+# 直接在 test_df 上操作，不再重复调用 drop
+X_test = test_df.drop(columns=cols_to_drop)
+# 强制对齐列名（这步能解决所有 Title 缺失导致的维度不一致问题）
+X_test = X_test.reindex(columns=X.columns, fill_value=0)
+
+# 9. 统一转为数值 (解决 True/False 问题)
+X = X.astype(float)
+X_test = X_test.astype(float)
+
+print("训练集特征形状:", X.shape)
+print("测试集特征形状:", X_test.shape)
+
+"""四、随机森林和logistic回归预测"""
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# --- 1. logistic回归 ---
+lr_model = LogisticRegression(max_iter=1000, random_state=42)
+lr_model.fit(X_train, y_train)
+lr_pred = lr_model.predict(X_val)
+lr_acc = accuracy_score(y_val, lr_pred)
+
+# --- 2. 随机森林 ---
+# n_estimators 是树的数量，max_depth 限制深度防止过拟合
+rf_model = RandomForestClassifier(n_estimators=100, max_depth=7, random_state=42)
+rf_model.fit(X_train, y_train)
+rf_pred = rf_model.predict(X_val)
+rf_acc = accuracy_score(y_val, rf_pred)
+
+# 建议选择表现稍好的随机森林，并用全部 X 训练一次
+rf_model_final = RandomForestClassifier(n_estimators=100, max_depth=7, random_state=42)
+rf_model_final.fit(X, y) # 注意这里用 X, y 而不是 X_train, y_train
+final_predictions = rf_model.predict(X_test)
+
+print(f"逻辑回归本地准确率: {lr_acc:.4f}")
+print(f"随机森林本地准确率: {rf_acc:.4f}")
+
+
+test_origin = pd.read_csv(r'C:\Users\Yang\Desktop\kaggle-1 TITANIC\test.csv')
+submission = pd.DataFrame({
+    "PassengerId": test_origin["PassengerId"],
+    "Survived": final_predictions.astype(int)
+})
+
+# 保存为 csv
+submission.to_csv('submission.csv', index=False)
+print("提交文件已生成：submission.csv")
+
+
+
